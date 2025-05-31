@@ -1,0 +1,66 @@
+using UnityEngine;
+using System.Collections;
+using System.Collections.Generic;
+
+public class PlayerControllerMultiplayer : MonoBehaviour
+{
+    public static PlayerControllerMultiplayer instance;
+    public float speed;
+    public float jumpForce;
+    private float moveInput;
+
+    private Rigidbody2D rb;
+
+    public bool isGrounded;
+    public Transform groundCheck;
+    public float checkRadius;
+    public LayerMask whatIsGround;
+
+    public Shoe Shoe;
+    public MultiplayerManager1 freeze;
+
+    public bool kicked;
+
+    private void Start()
+    {
+        if (instance == null)
+        {
+            instance = this;
+        }
+        rb = GetComponent<Rigidbody2D>();
+    }
+    private void FixedUpdate()
+    {
+        isGrounded = Physics2D.OverlapCircle(groundCheck.position, checkRadius, whatIsGround);
+        if (freeze.isFrozen)
+            return;
+        moveInput = Input.GetAxis("Horizontal1");
+        rb.linearVelocity = new Vector2(moveInput * speed, rb.linearVelocity.y);
+        /*
+        if (moveInput > 0)
+            ServerScript.instance.SendPlayerAction("right", moveInput);
+        else if (moveInput < 0)
+            ServerScript.instance.SendPlayerAction("left", moveInput);
+        */
+    }
+    private void Update()
+    {
+
+        if (freeze.isFrozen)
+            return;
+         if (Input.GetKeyDown(KeyCode.Space))
+        {
+            Shoe.StartKick();
+            kicked = true;
+        }
+        else if (Input.GetKey(KeyCode.W) && isGrounded == true)
+        {
+            jump();
+        }
+
+    }
+    public void jump()
+    {
+        rb.linearVelocity = Vector2.up * jumpForce;
+    }
+}

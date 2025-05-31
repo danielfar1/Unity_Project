@@ -1,28 +1,22 @@
 ﻿using UnityEngine;
 using UnityEngine.SceneManagement;
 using TMPro;
-using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using Mono.Data.Sqlite;
+using UnityEngine.Networking;
+using System.Collections;
 
 public class SignUpManager : MonoBehaviour
 {
     private const string NamePattern = @"^[a-zA-Z]+$";
     private const string EmailPattern = @"^([A-Za-z][A-Za-z0-9]+)([\._]\w+)?@(\w+)(\.\w+)(\.\w+)?$";
     private const string PasswordPattern = @"^(?=.*\d)(?=.*[A-Za-z])[A-Za-z\d]+$";
-
+    public ServerScript connectToServer;
     private bool[] validationResults = new bool[6];
-    private string[] realTexts;
-    private string[] textWithoutPoints = { "", "" };
     public bool isMasked = true;
-    private string dbPath;
-
     [Header("EyeImage")]
     public SpriteRenderer eyeOpen;
     public SpriteRenderer eyeClose;
-
-    [Header("Cursor")]
-    public Texture2D customCursor;
 
     [Header("Error Messages")]
     public TMP_Text firstNameError;
@@ -45,36 +39,12 @@ public class SignUpManager : MonoBehaviour
 
     private void Awake()
     {
-        dbPath = "URI=file:C:/FinalProject/1vs1Football.db";
-        realTexts = new string[passwordsArray.Length];
-        passwordsArray[0].onValueChanged.AddListener((value) => OnTextChanged(0, value));
-        UpdateMaskedText(0);
-        passwordsArray[1].onValueChanged.AddListener((value) => OnTextChanged(1, value));
-        UpdateMaskedText(1);
+        Application.runInBackground = true;
+        connectToServer.ConnectToServer();
+        passwordsArray[0].asteriskChar = '●';
+        passwordsArray[1].asteriskChar = '●';
         Cursor.SetCursor(null, Vector2.zero, CursorMode.Auto);
         DisableAllErrors();
-    }
-    private void OnTextChanged(int index, string userInput)
-    {
-        realTexts[index] = userInput;
-        if (userInput == "")
-            textWithoutPoints[index] = "";
-        else
-            if (userInput.Length-1 == textWithoutPoints[index].Length)
-                textWithoutPoints[index] += userInput[userInput.Length-1]; 
-        if (isMasked)
-        {
-            UpdateMaskedText(index);
-        }
-    }
-    private void UpdateMaskedText(int index)
-    {
-        if(passwordsArray[index].text != "")
-        {
-            passwordsArray[index].text = new string('●', realTexts[index].Length);
-            passwordsArray[index].caretPosition = realTexts[index].Length;
-        }
-        
     }
     public void ToggleMask()
     {
@@ -83,14 +53,14 @@ public class SignUpManager : MonoBehaviour
         {
             if (isMasked)
             {
-                UpdateMaskedText(i);
+                passwordsArray[i].contentType = TMP_InputField.ContentType.Password;
+                passwordsArray[i].asteriskChar = '●';
             }
             else
             {
-                if(textWithoutPoints[i]!="")
-                    passwordsArray[i].text = textWithoutPoints[i].Replace("●", "");
+                passwordsArray[i].contentType = TMP_InputField.ContentType.Standard;
             }
-            passwordsArray[i].caretPosition = passwordsArray[i].text.Length;
+            passwordsArray[i].ForceLabelUpdate();
         }
     }
     public void ChangeEyeImage()
@@ -105,29 +75,10 @@ public class SignUpManager : MonoBehaviour
     {
         if (AllFieldsValid())
         {
-            string[] newdata = {usernameInput.text.Trim(),textWithoutPoints[0].Replace("●", "").Trim(), emailInput.text.Trim(), firstNameInput.text.Trim(), lastNameInput.text.Trim() };
-            using (var connection = new SqliteConnection(dbPath))
-            {
-                connection.Open();
-                using (var transaction = connection.BeginTransaction())
-                {
-                    using (var command = connection.CreateCommand())
-                    {
-                        command.CommandText = @"
-                        INSERT INTO users (id, username, password, email, firstname, lastname) 
-                        VALUES (NULL, @username, @password, @email, @firstname, @lastname);";
-                        command.Parameters.AddWithValue("@username", newdata[0]);
-                        command.Parameters.AddWithValue("@password", newdata[1]);
-                        command.Parameters.AddWithValue("@email", newdata[2]);
-                        command.Parameters.AddWithValue("@firstname", newdata[3]);
-                        command.Parameters.AddWithValue("@lastname", newdata[4]);
-                        command.ExecuteNonQuery();
-                    }
-                    transaction.Commit();
-                }
-            }
-            Cursor.SetCursor(customCursor, Vector2.zero, CursorMode.ForceSoftware);
-            SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex + 1);
+            string action = "create_user";
+            User user = new User(usernameInput.text.Trim(), passwordsArray[0].text.Trim(), emailInput.text.Trim(), firstNameInput.text.Trim(), lastNameInput.text.Trim());
+            ServerScript.instance.SendRequest(action, user);
+            SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex + 1); //lobby scene
         }
     }
 
@@ -169,75 +120,89 @@ public class SignUpManager : MonoBehaviour
     {
         ValidateField(1, lastNameInput.text.Length >= 2 && Regex.IsMatch(lastNameInput.text, NamePattern), lastNameError);
     }
-    private bool CheckIfValueAlreadyExist(int index,string inputField)
+    private void CheckIfValueAlreadyExist(int index,string inputField)
     {
-        string[] checks = { "@username", "@email" };
-        using (var connection = new SqliteConnection(dbPath))
+        bool result;
+        if (index==0)
         {
-            connection.Open();
-            using (var command = connection.CreateCommand())
+            if (ServerScript.instance.SendRequest("check_username", $"{{\"username\":\"{inputField}\"}}") == true)
+                result = true;
+            else
+                result = false;
+        }
+        else
+        {
+            if (ServerScript.instance.SendRequest("check_email", $"{{\"email\":\"{inputField}\"}}") == true)
+                result = true;
+            else
+                result = false;
+        }
+        ValidateUsernameAndEmail(result, index);
+    }
+    public void ValidateUsernameAndEmail(bool responseText,int index)
+    {
+
+        if(index==0) //ValidateUsername
+        {
+            bool usernameExist = responseText;
+            if (usernameExist)
             {
-                command.CommandText = "SELECT "+checks[index].Substring(1)+" FROM users WHERE " + checks[index].Substring(1) +"=" + checks[index];
-                command.Parameters.AddWithValue(checks[index], inputField);
-                using (var reader = command.ExecuteReader())
-                {
-                    return reader.HasRows;
-                }
+                ValidateField(2, false, usernameExistError);
+                usernameSpaceError.enabled = false;
+                usernameLengthError.enabled = false;
+            }
+            else if (usernameInput.text.Length < 5)
+            {
+                ValidateField(2, false, usernameLengthError);
+                usernameSpaceError.enabled = false;
+                usernameExistError.enabled = false;
+            }
+            else if (usernameInput.text.Contains(' '))
+            {
+                ValidateField(2, false, usernameSpaceError);
+                usernameLengthError.enabled = false;
+                usernameExistError.enabled = false;
+            }
+            else
+            {
+                ValidateField(2, true, usernameLengthError);
+                usernameSpaceError.enabled = false;
+                usernameExistError.enabled = false;
+            }
+        }
+        else       //ValidateEmail
+        {
+            bool emailExist = responseText;
+            if (emailExist)
+            {
+                ValidateField(3, false, emailExistError);
+                emailError.enabled = false;
+            }
+            else
+            {
+                ValidateField(3, Regex.IsMatch(emailInput.text, EmailPattern), emailError);
+                emailExistError.enabled = false;
             }
         }
     }
     public void ValidateUsername()
     {
-        bool usernameExist = CheckIfValueAlreadyExist(0, usernameInput.text);
-        if(usernameExist)
-        {
-            ValidateField(2, false, usernameExistError);
-            usernameSpaceError.enabled = false;
-            usernameLengthError.enabled = false;
-        }
-        else if (usernameInput.text.Length < 5)
-        {
-            ValidateField(2, false, usernameLengthError);
-            usernameSpaceError.enabled = false;
-            usernameExistError.enabled = false;
-        }
-        else if (usernameInput.text.Contains(' '))
-        {
-            ValidateField(2, false, usernameSpaceError);
-            usernameLengthError.enabled = false;
-            usernameExistError.enabled = false;
-        }
-        else
-        {
-            ValidateField(2, true, usernameLengthError);
-            usernameSpaceError.enabled = false;
-            usernameExistError.enabled = false;
-        }
+        CheckIfValueAlreadyExist(0, usernameInput.text);
     }
 
     public void ValidateEmail()
     {
-        bool emailExist = CheckIfValueAlreadyExist(1, emailInput.text);
-        if (emailExist)
-        {
-            ValidateField(3, false, emailExistError);
-            emailError.enabled = false;
-        }
-        else
-        {
-            ValidateField(3, Regex.IsMatch(emailInput.text, EmailPattern), emailError);
-            emailExistError.enabled = false;
-        }
+        CheckIfValueAlreadyExist(1, emailInput.text);
     }
 
     public void ValidatePassword()
     {
-        if (textWithoutPoints[0].Replace("●", "").Length < 8)
+        if (passwordsArray[0].text.Length < 8)
         {
             ValidateField(4, false, passwordLengthError);
             passwordFormatError.enabled = false;
         }
-        else if (!Regex.IsMatch(textWithoutPoints[0].Replace("●", ""), PasswordPattern))
+        else if (!Regex.IsMatch(passwordsArray[0].text, PasswordPattern))
         {
             ValidateField(4, false, passwordFormatError);
             passwordLengthError.enabled = false;
@@ -251,11 +216,38 @@ public class SignUpManager : MonoBehaviour
 
     public void ValidateConfirmPassword()
     {
-        ValidateField(5, textWithoutPoints[0].Replace("●", "") == textWithoutPoints[1].Replace("●", ""), confirmPasswordError);
+        ValidateField(5, passwordsArray[0].text == passwordsArray[1].text, confirmPasswordError);
     }
     public void AlreadyHaveAnACC()
     {
         SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex -1);
     }
+    private void OnApplicationQuit()
+    {
+        if (ServerScript.instance.stream != null)
+            ServerScript.instance.stream.Close();
+        if (ServerScript.instance.client != null)
+            ServerScript.instance.client.Close();
+        Debug.Log("Disconnected from the server.");
+    }
 
 }
+
+public class User
+{
+    public string username;
+    public string password;
+    public string email;
+    public string firstname;
+    public string lastname;
+
+    public User(string username, string password,string email,string firstname,string lastname)
+    {
+        this.username = username;
+        this.password = password;
+        this.email = email;
+        this.firstname = firstname;
+        this.lastname = lastname;
+    }
+}
+

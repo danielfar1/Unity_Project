@@ -5,6 +5,7 @@ import socket
 from contextlib import closing
 from validator import validateUser
 import select
+import bcrypt
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../1vs1Football.db")
 users_connected = 0
@@ -55,26 +56,32 @@ def check_email(email):
             return cursor.fetchone() is not None
 
 
-def check_login(password, email,socket):
+def check_login(password, email,adrr):
     key =   True
-    for socketkey,user in users.items():
-        if user == email:
-            key = False
-
+    key = user_is_already_connected(email)
     if key:
         with closing(sqlite3.connect(DB_FILE)) as conn:
             with conn:
                 cursor = conn.cursor()
-                cursor.execute(f'SELECT email,password FROM users WHERE email="{email}" AND password="{password}"')
-                if cursor.fetchone() is not None:
-                    users[socket] = email
-                    print(users)
-                    return True
+                print(password)
+                cursor.execute("SELECT password FROM users WHERE email = ?", (email,))
+                result = cursor.fetchone()
+                if result:
+                    if bcrypt.checkpw(password.encode(),result[0] ) :
+                        users[adrr] = email
+                        return True
+                    else:
+                        return False
                 else:
                     return False
     else:
         return False
 
+def user_is_already_connected(email):
+    for socketkey,user in users.items():
+            if user == email:
+                return False
+    return True
 
 def check_multiplayer_users(data, socket):
     global users_connected, game_sockets, player_sessions,player1_already_assign 
@@ -109,13 +116,15 @@ def check_opponent_connected():
     return users_connected == 2
 
 
-def create_user(user):
+def create_user(user,adrr):
     if validateUser(user):
         with closing(sqlite3.connect(DB_FILE)) as conn:
             with conn:
+                user.password = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt())
                 data = [(None, user.username, user.password, user.email, user.firstname, user.lastname)]    
                 cursor = conn.cursor()
-                cursor.executemany("INSERT INTO users VALUES(?,?,?,?,?,?)", data)
+                cursor.executemany("INSERT INTO users VALUES(?,?,?,?,?,?,null)", data)
+                users[adrr] = user.email
                 return True 
 
 def assign_player1(socket):
@@ -149,6 +158,8 @@ def handle_request(request, socket ,adrr):
             return check_username(data['username'])
         elif action == 'check_email':
             return check_email(data['email'])
+        elif action == 'user_is_already_connected':
+            return user_is_already_connected(data['email'])
         elif action == 'check_login':
             return check_login(data['password'], data['email'],adrr)
         elif action == 'create_user':
@@ -159,7 +170,7 @@ def handle_request(request, socket ,adrr):
                 firstname=data['firstname'],
                 lastname=data['lastname']
             )
-            return create_user(user)
+            return create_user(user,adrr)
         else:
             return False
     except Exception as e:
@@ -172,11 +183,12 @@ def start_server(host="0.0.0.0", port=5000):
     global player1_already_assign
     try:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.bind((host, port))
-        server_socket.listen()
+        server_socket.bind((host, port)) #building the server
+        server_socket.listen() #lisening for users
         player1_already_assign = False
         print(f"Server is running on {host}:{port}")
     except socket.error as e:
+        #server error
         print(f"Failed to set up server: {e}")
         return
 
@@ -188,45 +200,34 @@ def start_server(host="0.0.0.0", port=5000):
 
             for current_socket in rlist:
                 if current_socket is server_socket:
-                    conn, addr = server_socket.accept()
+                    conn, addr = server_socket.accept() #accept clients
                     print(f"Connected by {addr}")
-                    client_sockets.append(conn)
+                    client_sockets.append(conn)     #saving the conn off every client
                     users[addr[1]] = None
-                    buffers[conn] = ""
+                    buffers[conn] = "" 
                 else:
                     try:
-                        data = current_socket.recv(1024)
-                        if not data:
+                        data = current_socket.recv(1024) # receiving the message
+                        if not data:            #without data the client disconnect
                             print("Client disconnected")
                             client_sockets.remove(current_socket)
                             users.pop(addr[1],None)
                             buffers.pop(current_socket, None)
                             current_socket.close()
                             continue
-                        buffers[current_socket] += data.decode('utf-8')
-                        print("buffer "+buffers[current_socket])
-                        if '\n' not in buffers[current_socket]:
+                        buffers[current_socket] += data.decode('utf-8') #add to buffer
+                        while '\n' in buffers[current_socket]:
+                            line, buffers[current_socket] = buffers[current_socket].split('\n', 1)
+                            if not line.strip():
+                                continue
                             try:
-                                request = json.loads(data.decode('utf-8'))
-                                response = handle_request(request, current_socket , addr[1])
-                                print("Parsed request db:", request)
+                                request = json.loads(line)
+                                response = handle_request(request, current_socket,addr[1])
+                                print("Parsed request game:", request)
                                 if request["action"] != 'player_action':
                                     current_socket.sendall((json.dumps(response) + "\n").encode('utf-8'))
                             except json.JSONDecodeError as e:
-                                    print("JSON decode error:", e)
-                        else:
-                            while '\n' in buffers[current_socket]:
-                                line, buffers[current_socket] = buffers[current_socket].split('\n', 1)
-                                if not line.strip():
-                                    continue
-                                try:
-                                    request = json.loads(line)
-                                    response = handle_request(request, current_socket,addr[1])
-                                    print("Parsed request game:", request)
-                                    if request["action"] != 'player_action':
-                                        current_socket.sendall((json.dumps(response) + "\n").encode('utf-8'))
-                                except json.JSONDecodeError as e:
-                                    print("JSON decode error:", e)
+                                print("JSON decode error:", e)
                     except Exception as e:
                         print(f"Error handling client: {e}")
                         if current_socket in client_sockets:
