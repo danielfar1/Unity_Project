@@ -5,20 +5,26 @@ using System;
 using System.Text;
 using UnityEngine.SceneManagement;
 
+
+/// Handles TCP socket communication with the game server.
+/// Sends and receives JSON messages to synchronize multiplayer state.
 public class ServerScript : MonoBehaviour
 {
     public static ServerScript instance;
-    public TcpClient client;
-    public NetworkStream stream;
-    private Thread listenThread;
-    private const string serverIP = "10.100.102.15"; 
-    private const string serverIPLaptop = "10.100.102.241"; 
-    private const int serverPort = 5000;
-    private bool connected = false;
-    public MultiplayerManager1 multi;
-    public bool opponentConnected = false;
-    private StringBuilder receiveBuffer = new StringBuilder();
 
+    public TcpClient client;                  // TCP client to connect to server
+    public NetworkStream stream;              // Stream used to read/write data
+    private Thread listenThread;              // Background thread to listen for incoming server messages
+    private const string serverIP = "10.100.102.15";         // Server IP (primary)
+    private const string serverIPLaptop = "10.100.102.241";  // Alternative IP for testing
+    private const int serverPort = 5000;
+
+    private bool connected = false;
+    public MultiplayerManager1 multi;         // Reference to the multiplayer manager in the scene
+    public bool opponentConnected = false;
+    private StringBuilder receiveBuffer = new StringBuilder(); // Buffer to accumulate partial socket reads
+
+    // Singleton pattern to keep server script persistent
     private void Awake()
     {
         if (instance == null)
@@ -29,7 +35,7 @@ public class ServerScript : MonoBehaviour
         else
         {
             Destroy(gameObject);
-        }    
+        }
     }
 
     private void OnEnable()
@@ -41,6 +47,8 @@ public class ServerScript : MonoBehaviour
     {
         SceneManager.sceneLoaded -= OnSceneLoaded;
     }
+
+    // Assigns MultiplayerManager1 when scene 7 is loaded
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
         if (scene.buildIndex == 7)
@@ -48,15 +56,14 @@ public class ServerScript : MonoBehaviour
             multi = FindFirstObjectByType<MultiplayerManager1>();
 
             if (multi != null)
-            {
                 Debug.Log("MultiplayerManager1 found and assigned.");
-            }
             else
-            {
                 Debug.LogWarning("MultiplayerManager1 not found in scene 7.");
-            }
         }
     }
+
+    
+    /// Connects to the game server via TCP.
     public void ConnectToServer()
     {
         if (!connected)
@@ -75,90 +82,81 @@ public class ServerScript : MonoBehaviour
             }
         }
     }
+
+    
+    /// Starts the listener thread that handles incoming messages.
     public void StartLisener()
     {
-
         listenThread = new Thread(ListenForGameServerMessages);
         listenThread.Start();
     }
+
+    
+    /// Continuously listens for server messages and handles them accordingly.
+    /// Also sends local player state updates back to the server.
     void ListenForGameServerMessages()
     {
         float x, y, yball, xball;
         byte[] buffer = new byte[1024];
+
         try
         {
             while (MultiplayerManager1.instance.gameIsgoing)
             {
                 while (client.Connected)
                 {
-                    if (PlayerControllerMultiplayer.instance.kicked == true)
+                    // Handle player "kick" action if flagged
+                    if (PlayerControllerMultiplayer.instance.kicked)
                     {
                         Kick();
                         PlayerControllerMultiplayer.instance.kicked = false;
                     }
                     else
                     {
+                        // Update the server with current player and ball positions
                         MainThreadDispatcher.Run(() =>
                         {
                             x = multi.rbLeft.position.x;
                             y = multi.rbLeft.position.y;
                             xball = multi.ballMove.position.x;
                             yball = multi.ballMove.position.y;
-                            if(multi.firstToConnect == true)
+
+                            if (multi.firstToConnect)
                             {
-                                Debug.Log("not you");
                                 SendPlayerAction("ball", xball, yball);
                             }
+
                             SendPlayerAction("position", x, y);
-                            
                         });
                     }
-                    // ????? ?????: ?? 1024 ???? ???? ?????
+
+                    // Read incoming data
                     int bytesRead = stream.Read(buffer, 0, buffer.Length);
+                    if (bytesRead <= 0) continue;
 
-                    // ?? ?? ?????? ?????? – ?????? ?? ?????
-                    if (bytesRead <= 0)
-                        continue;
-
-                    // ???? ??????? ????? ???? ??????? ?????? ????? ?????
                     receiveBuffer.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
 
-                    // ????? ??????? ??? ?? ??? ???? '\n'
+                    // Process complete JSON lines (separated by \n)
                     while (true)
                     {
                         string current = receiveBuffer.ToString();
                         int newlineIndex = current.IndexOf('\n');
+                        if (newlineIndex == -1) break;
 
-                        // ?? ??? ?? ??? ???? – ????? ???? ??????
-                        if (newlineIndex == -1)
-                            break;
-
-                        // ????? ????? ??? ???? ???? ?????
                         string fullMessage = current.Substring(0, newlineIndex).Trim();
-                        Debug.Log(newlineIndex + " - " + current + " current buffer");
-                        Debug.Log(fullMessage + " fullMessage");
-
-                        // ???? ?????? ??????
                         receiveBuffer.Remove(0, newlineIndex + 1);
 
-                        // ????? ?? ?????? ???????? ?????? ??? true/false
-                        if (fullMessage == "true" || fullMessage == "false")
+                        if (string.IsNullOrWhiteSpace(fullMessage) || fullMessage == "true" || fullMessage == "false")
                             continue;
 
-                        // ?? ??????? ???? ??? ???? – ???????
-                        if (!string.IsNullOrWhiteSpace(fullMessage))
+                        Debug.Log($"Received: {fullMessage}");
+
+                        ServerMessage serverMessage = JsonUtility.FromJson<ServerMessage>(fullMessage);
+
+                        if (serverMessage.action == "opponent_action")
                         {
-                            Debug.Log($"Received: {fullMessage}");
-
-                            // ????? JSON ?????? ????? ?????
-                            ServerMessage serverMessage = JsonUtility.FromJson<ServerMessage>(fullMessage);
-
-                            // ?? ?????? ??? ?? ???? – ?????? ????? ????????
-                            if (serverMessage.action == "opponent_action")
-                            {
-                                OpponentActionData action = JsonUtility.FromJson<OpponentActionData>(serverMessage.data);
-                                HandleOpponentAction(action);
-                            }
+                            OpponentActionData action = JsonUtility.FromJson<OpponentActionData>(serverMessage.data);
+                            HandleOpponentAction(action);
                         }
                     }
                 }
@@ -170,48 +168,53 @@ public class ServerScript : MonoBehaviour
         }
     }
 
-        public void HandleOpponentAction(OpponentActionData action)
+    
+    /// Applies an action received from the opponent to the local game state.
+    public void HandleOpponentAction(OpponentActionData action)
     {
-        if (action.type == "kick")
+        MainThreadDispatcher.Run(() =>
         {
-            MainThreadDispatcher.Run(() =>
+            switch (action.type)
             {
-                SecondPlayerControllerMultiplayer.instance.Kick();
-                multi.rbRight.position = new Vector2(-action.x, action.y);
-            });
-        }
-        if(action.type == "position")
-        {
-            MainThreadDispatcher.Run(() => {
-                multi.rbRight.position = new Vector2(-action.x, action.y);
-            });
-        }
-        if(action.type == "ball")
-        {
-            MainThreadDispatcher.Run(() => {
-                multi.ballMove.position = new Vector2(-action.x, action.y);
-            });
-        }    
+                case "kick":
+                    SecondPlayerControllerMultiplayer.instance.Kick();
+                    multi.rbRight.position = new Vector2(-action.x, action.y);
+                    break;
+                case "position":
+                    multi.rbRight.position = new Vector2(-action.x, action.y);
+                    break;
+                case "ball":
+                    multi.ballMove.position = new Vector2(-action.x, action.y);
+                    break;
+            }
+        });
     }
+
+    
+    /// Sends a 'kick' action to the server.
     public void Kick()
     {
-        if (MultiplayerManager1.instance.isFrozen)
-            return;
-        MainThreadDispatcher.Run(() => {
+        if (MultiplayerManager1.instance.isFrozen) return;
+
+        MainThreadDispatcher.Run(() =>
+        {
             SendPlayerAction("kick", multi.rbLeft.position.x, multi.rbLeft.position.y);
         });
     }
-    
-    public void SendPlayerAction(string type,float x,float y)
-    {
 
+    
+    /// Sends any kind of player action (position, kick, ball) to the server.
+
+    public void SendPlayerAction(string type, float x, float y)
+    {
         string data_string = $"{{\"type\":\"{type}\",\"x\":\"{x}\",\"y\":\"{y}\"}}";
-        string json = JsonUtility.ToJson(new Request("player_action",data_string)) + "\n";
+        string json = JsonUtility.ToJson(new Request("player_action", data_string)) + "\n";
         byte[] data = Encoding.UTF8.GetBytes(json);
         stream.Write(data, 0, data.Length);
     }
 
     
+    /// Sends a string-based request to the server and waits for a true/false or null response.
     public bool? SendRequest(string action, string dataToSend)
     {
         if (client == null || !client.Connected)
@@ -219,35 +222,30 @@ public class ServerScript : MonoBehaviour
             Debug.LogError("Client is not connected to the server.");
             return false;
         }
+
         try
         {
-            Debug.Log(action);
-            // Create the request
-            string request = JsonUtility.ToJson(new Request(action, dataToSend))+ "\n";
-            Debug.Log("request " + request);
-
-            // Send the request to the server
+            string request = JsonUtility.ToJson(new Request(action, dataToSend)) + "\n";
             byte[] data = Encoding.UTF8.GetBytes(request);
             stream.Write(data, 0, data.Length);
 
-            // Receive the response from the server
             byte[] responseData = new byte[1024];
             int bytesRead = stream.Read(responseData, 0, responseData.Length);
-            string response = Encoding.UTF8.GetString(responseData, 0, bytesRead);
-            response = response.Trim();
-            if(response != "true" && response != "false")
-                return null;
-            else
-                return bool.Parse(response);
-        }
+            string response = Encoding.UTF8.GetString(responseData, 0, bytesRead).Trim();
 
+            return response == "true" ? true :
+                   response == "false" ? false :
+                   (bool?)null;
+        }
         catch (Exception e)
         {
             Debug.LogError("Error sending request: " + e.Message);
             return false;
         }
-
     }
+
+    
+    /// Sends a request with a User object and expects a boolean response.
     public bool SendRequest(string action, User dataToSend)
     {
         if (client == null || !client.Connected)
@@ -255,50 +253,53 @@ public class ServerScript : MonoBehaviour
             Debug.LogError("Client is not connected to the server.");
             return false;
         }
+
         try
         {
-            // Create the request
             string userJson = JsonUtility.ToJson(dataToSend);
-            string request = JsonUtility.ToJson(new Request(action, userJson))+ "\n";
+            string request = JsonUtility.ToJson(new Request(action, userJson)) + "\n";
 
-            // Send the request to the server
             byte[] data = Encoding.UTF8.GetBytes(request);
             stream.Write(data, 0, data.Length);
 
-            // Receive the response from the server
             byte[] responseData = new byte[1024];
             int bytesRead = stream.Read(responseData, 0, responseData.Length);
             string response = Encoding.UTF8.GetString(responseData, 0, bytesRead);
-            bool result = bool.Parse(response);
-            return result;
-        }
 
+            return bool.Parse(response);
+        }
         catch (Exception e)
         {
             Debug.LogError("Error sending request: " + e.Message);
             return false;
         }
     }
-    
-
-
 }
+
+
+/// Represents the structure of an action received from the opponent.
 public class OpponentActionData
 {
     public string type;
     public float x;
     public float y;
+
     public OpponentActionData(string type)
     {
         this.type = type;
     }
-    public OpponentActionData(string type, float x,float y)
+
+    public OpponentActionData(string type, float x, float y)
     {
         this.type = type;
         this.x = x;
         this.y = y;
     }
 }
+
+
+/// Represents a request that can be serialized to JSON and sent to the server.
+/// </summary>
 public class Request
 {
     public string action;
@@ -310,6 +311,10 @@ public class Request
         this.data = data;
     }
 }
+
+
+/// Represents a message received from the server.
+/// </summary>
 public class ServerMessage
 {
     public string action;

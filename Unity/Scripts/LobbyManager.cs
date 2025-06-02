@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
+///manage the lobby scene and load the login or signup scene
 public class LobbyManager : MonoBehaviour
 {
     public void PlayPress()

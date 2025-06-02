@@ -6,15 +6,19 @@ using Mono.Data.Sqlite;
 using UnityEngine.Networking;
 using System.Collections;
 
+/// Manages the signup process, including input validation, error handling,
+/// and communication with the server to create new users.
 public class SignUpManager : MonoBehaviour
 {
+    // Validation regex patterns
     private const string NamePattern = @"^[a-zA-Z]+$";
     private const string EmailPattern = @"^([A-Za-z][A-Za-z0-9]+)([\._]\w+)?@(\w+)(\.\w+)(\.\w+)?$";
     private const string PasswordPattern = @"^(?=.*\d)(?=.*[A-Za-z])[A-Za-z\d]+$";
-    public ServerScript connectToServer;
-    private bool[] validationResults = new bool[6];
+
+    private bool[] validationResults = new bool[6]; // Track valid states of fields: [first, last, username, email, pwd, confirmPwd]
     public bool isMasked = true;
-    [Header("EyeImage")]
+
+    [Header("Eye Image")]
     public SpriteRenderer eyeOpen;
     public SpriteRenderer eyeClose;
 
@@ -35,53 +39,61 @@ public class SignUpManager : MonoBehaviour
     public TMP_InputField lastNameInput;
     public TMP_InputField usernameInput;
     public TMP_InputField emailInput;
-    public TMP_InputField[] passwordsArray;
+    public TMP_InputField[] passwordsArray; // [0] = password, [1] = confirm password
 
-    private void Awake()
+    private void Start()
     {
         Application.runInBackground = true;
-        connectToServer.ConnectToServer();
+        ServerScript.instance.ConnectToServer();
+        DisableAllErrors();
+
+        // Mask password fields by default
         passwordsArray[0].asteriskChar = '●';
         passwordsArray[1].asteriskChar = '●';
+
         Cursor.SetCursor(null, Vector2.zero, CursorMode.Auto);
-        DisableAllErrors();
     }
+
+    /// Toggles password visibility in input fields.
     public void ToggleMask()
     {
         isMasked = !isMasked;
-        for (int i = 0; i < passwordsArray.Length; i++)
+
+        foreach (var field in passwordsArray)
         {
-            if (isMasked)
-            {
-                passwordsArray[i].contentType = TMP_InputField.ContentType.Password;
-                passwordsArray[i].asteriskChar = '●';
-            }
-            else
-            {
-                passwordsArray[i].contentType = TMP_InputField.ContentType.Standard;
-            }
-            passwordsArray[i].ForceLabelUpdate();
+            field.contentType = isMasked ? TMP_InputField.ContentType.Password : TMP_InputField.ContentType.Standard;
+            field.asteriskChar = '●';
+            field.ForceLabelUpdate();
         }
     }
+
+    /// Toggles eye icon visibility to reflect password masking state.
     public void ChangeEyeImage()
     {
-        if(eyeOpen.enabled == eyeOpen.enabled)
-        {
-           eyeOpen.enabled = !eyeOpen.enabled;
-           eyeClose.enabled = !eyeClose.enabled;
-        }
+        eyeOpen.enabled = !eyeOpen.enabled;
+        eyeClose.enabled = !eyeClose.enabled;
     }
+
+    /// Proceeds to the lobby if all fields are valid.
     public void ProceedToLobby()
     {
         if (AllFieldsValid())
         {
             string action = "create_user";
-            User user = new User(usernameInput.text.Trim(), passwordsArray[0].text.Trim(), emailInput.text.Trim(), firstNameInput.text.Trim(), lastNameInput.text.Trim());
+            User user = new User(
+                usernameInput.text.Trim(),
+                passwordsArray[0].text.Trim(),
+                emailInput.text.Trim(),
+                firstNameInput.text.Trim(),
+                lastNameInput.text.Trim()
+            );
+
             ServerScript.instance.SendRequest(action, user);
-            SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex + 1); //lobby scene
+            SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex + 1); // Load lobby scene
         }
     }
 
+    /// Checks if all validation flags are true.
     private bool AllFieldsValid()
     {
         foreach (bool isValid in validationResults)
@@ -91,6 +103,7 @@ public class SignUpManager : MonoBehaviour
         return true;
     }
 
+    /// Disables all error UI elements.
     private void DisableAllErrors()
     {
         firstNameError.enabled = false;
@@ -105,6 +118,7 @@ public class SignUpManager : MonoBehaviour
         confirmPasswordError.enabled = false;
     }
 
+    /// Updates validation state and toggles error visibility.
     private void ValidateField(int index, bool condition, TMP_Text errorText)
     {
         validationResults[index] = condition;
@@ -120,60 +134,49 @@ public class SignUpManager : MonoBehaviour
     {
         ValidateField(1, lastNameInput.text.Length >= 2 && Regex.IsMatch(lastNameInput.text, NamePattern), lastNameError);
     }
-    private void CheckIfValueAlreadyExist(int index,string inputField)
-    {
-        bool result;
-        if (index==0)
-        {
-            if (ServerScript.instance.SendRequest("check_username", $"{{\"username\":\"{inputField}\"}}") == true)
-                result = true;
-            else
-                result = false;
-        }
-        else
-        {
-            if (ServerScript.instance.SendRequest("check_email", $"{{\"email\":\"{inputField}\"}}") == true)
-                result = true;
-            else
-                result = false;
-        }
-        ValidateUsernameAndEmail(result, index);
-    }
-    public void ValidateUsernameAndEmail(bool responseText,int index)
-    {
 
-        if(index==0) //ValidateUsername
+    /// Sends a request to check if username/email already exists.
+    private void CheckIfValueAlreadyExist(int index, string inputField)
+    {
+        bool exists = index == 0
+            ? ServerScript.instance.SendRequest("check_username", $"{{\"username\":\"{inputField}\"}}") == true
+            : ServerScript.instance.SendRequest("check_email", $"{{\"email\":\"{inputField}\"}}") == true;
+
+        ValidateUsernameAndEmail(exists, index);
+    }
+
+    public void ValidateUsernameAndEmail(bool exists, int index)
+    {
+        if (index == 0) // Username
         {
-            bool usernameExist = responseText;
-            if (usernameExist)
+            if (exists)
             {
                 ValidateField(2, false, usernameExistError);
-                usernameSpaceError.enabled = false;
                 usernameLengthError.enabled = false;
+                usernameSpaceError.enabled = false;
             }
             else if (usernameInput.text.Length < 5)
             {
                 ValidateField(2, false, usernameLengthError);
-                usernameSpaceError.enabled = false;
                 usernameExistError.enabled = false;
+                usernameSpaceError.enabled = false;
             }
-            else if (usernameInput.text.Contains(' '))
+            else if (usernameInput.text.Contains(" "))
             {
                 ValidateField(2, false, usernameSpaceError);
-                usernameLengthError.enabled = false;
                 usernameExistError.enabled = false;
+                usernameLengthError.enabled = false;
             }
             else
             {
                 ValidateField(2, true, usernameLengthError);
-                usernameSpaceError.enabled = false;
                 usernameExistError.enabled = false;
+                usernameSpaceError.enabled = false;
             }
         }
-        else       //ValidateEmail
+        else // Email
         {
-            bool emailExist = responseText;
-            if (emailExist)
+            if (exists)
             {
                 ValidateField(3, false, emailExistError);
                 emailError.enabled = false;
@@ -185,15 +188,10 @@ public class SignUpManager : MonoBehaviour
             }
         }
     }
-    public void ValidateUsername()
-    {
-        CheckIfValueAlreadyExist(0, usernameInput.text);
-    }
 
-    public void ValidateEmail()
-    {
-        CheckIfValueAlreadyExist(1, emailInput.text);
-    }
+    public void ValidateUsername() => CheckIfValueAlreadyExist(0, usernameInput.text);
+
+    public void ValidateEmail() => CheckIfValueAlreadyExist(1, emailInput.text);
 
     public void ValidatePassword()
     {
@@ -216,23 +214,35 @@ public class SignUpManager : MonoBehaviour
 
     public void ValidateConfirmPassword()
     {
-        ValidateField(5, passwordsArray[0].text == passwordsArray[1].text, confirmPasswordError);
+        bool match = passwordsArray[0].text == passwordsArray[1].text;
+        ValidateField(5, match, confirmPasswordError);
+
+        if (!match)
+        {
+            passwordsArray[0].text = "";
+            passwordsArray[1].text = "";
+        }
     }
+
+    /// Navigates back to the login scene.
     public void AlreadyHaveAnACC()
     {
-        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex -1);
+        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex - 1);
     }
+    /// Clean disconnection from the server when application exits.
     private void OnApplicationQuit()
     {
         if (ServerScript.instance.stream != null)
             ServerScript.instance.stream.Close();
+
         if (ServerScript.instance.client != null)
             ServerScript.instance.client.Close();
+
         Debug.Log("Disconnected from the server.");
     }
-
 }
 
+/// Serializable user object for signup submission.
 public class User
 {
     public string username;
@@ -241,7 +251,7 @@ public class User
     public string firstname;
     public string lastname;
 
-    public User(string username, string password,string email,string firstname,string lastname)
+    public User(string username, string password, string email, string firstname, string lastname)
     {
         this.username = username;
         this.password = password;
@@ -250,4 +260,3 @@ public class User
         this.lastname = lastname;
     }
 }
-

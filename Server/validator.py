@@ -1,5 +1,6 @@
 import re
 
+### validate if the user values are valid ###
 def validateUser(user):
     return validateFirstName(user.firstname) and validateLastName(user.lastname) and validateUsername(user.username) and validateEmail(user.email) and validatePassword(user.password)
 
